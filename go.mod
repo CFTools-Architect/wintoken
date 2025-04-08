@@ -1,4 +1,4 @@
-module github.com/fourcorelabs/wintoken
+module github.com/CFTools-Architect/wintoken
 
 go 1.16
 
