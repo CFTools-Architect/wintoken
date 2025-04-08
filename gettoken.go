@@ -2,22 +2,17 @@ package wintoken
 
 import (
 	"fmt"
-	"unsafe"
-
+	"github.com/winlabs/gowin32"
 	"golang.org/x/sys/windows"
-)
-
-var (
-	modWtsapi32           = windows.NewLazySystemDLL("wtsapi32.dll")
-	procWTSFreeMemory     = modWtsapi32.NewProc("WTSFreeMemory")
-	procWTSQuerySessionInformation = modWtsapi32.NewProc("WTSQuerySessionInformationW")
+	"strings"
+	"unsafe"
 )
 
 const (
 	WTS_CURRENT_SERVER_HANDLE windows.Handle = 0
 )
 
-//OpenProcessToken opens a process token using PID, pass 0 as PID for self token
+// OpenProcessToken opens a process token using PID, pass 0 as PID for self token
 func OpenProcessToken(pid int, tokenType tokenType) (*Token, error) {
 	var (
 		t               windows.Token
@@ -66,8 +61,18 @@ func OpenProcessToken(pid int, tokenType tokenType) (*Token, error) {
 	return &Token{token: duplicatedToken, typ: tokenType}, nil
 }
 
-//GetInteractiveToken gets the interactive token associated with current logged in user
-//It uses windows API WTSEnumerateSessions, WTSQueryUserToken and DuplicateTokenEx to return a valid wintoken
+func checkState(state uint32) bool {
+	switch state {
+	case windows.WTSActive, windows.WTSConnected, windows.WTSDisconnected, windows.WTSIdle:
+		return true
+	default:
+		return false
+	}
+}
+
+// GetInteractiveToken gets the interactive token associated with an existing interactive session.
+// It uses Windows API WTSEnumerateSessions, WTSQueryUserToken and DuplicateTokenEx to return a valid wintoken.
+// Session is considered valid, if it's state is one of WTSActive, WTSConnected, WTSDisconnected or WTSIdle.
 func GetInteractiveToken(tokenType tokenType) (*Token, error) {
 
 	switch tokenType {
@@ -98,7 +103,7 @@ func GetInteractiveToken(tokenType tokenType) (*Token, error) {
 	}
 
 	for i := range sessions {
-		if sessions[i].State == windows.WTSActive {
+		if checkState(sessions[i].State) && sessions[i].SessionID != 0 {
 			sessionID = sessions[i].SessionID
 			break
 		}
@@ -141,6 +146,9 @@ func GetInteractiveToken(tokenType tokenType) (*Token, error) {
 	return &Token{typ: tokenType, token: duplicatedToken}, nil
 }
 
+// GetInteractiveTokenByUser gets the interactive token associated with an existing interactive session created for a defined user.
+// It uses Windows API WTSEnumerateSessions, WTSServer query and DuplicateTokenEx to return a valid wintoken.
+// Session is considered valid, if it's state is one of WTSActive, WTSConnected, WTSDisconnected or WTSIdle.
 func GetInteractiveTokenByUser(tokenType tokenType, account string) (*Token, error) {
 	switch tokenType {
 	case TokenPrimary, TokenImpersonation, TokenLinked:
@@ -170,8 +178,8 @@ func GetInteractiveTokenByUser(tokenType tokenType, account string) (*Token, err
 	for i := uint32(0); i < sessionCount; i++ {
 		sessionInfo := (*windows.WTS_SESSION_INFO)(unsafe.Pointer(sessionPointer + uintptr(i)*size))
 
-		if sessionInfo.State != windows.WTSActive {
-			continue
+		if !checkState(sessionInfo.State) {
+			continue // Find another session, state of this session in unacceptable.
 		}
 
 		username, err := querySessionUsername(sessionInfo.SessionID)
@@ -226,22 +234,13 @@ func GetInteractiveTokenByUser(tokenType tokenType, account string) (*Token, err
 }
 
 func querySessionUsername(sessionID uint32) (string, error) {
-	var (
-		pUser  uintptr
-		length uint32
-	)
 
-	r1, _, err := procWTSQuerySessionInformation.Call(
-		uintptr(WTS_CURRENT_SERVER_HANDLE),
-		uintptr(sessionID),
-		uintptr(windows.WTSUserName),
-		uintptr(unsafe.Pointer(&pUser)),
-		uintptr(unsafe.Pointer(&length)),
-	)
-	if r1 == 0 || pUser == 0 {
-		return "", fmt.Errorf("WTSQuerySessionInformation failed: %w", err)
+	server := gowin32.OpenWTSServer("127.0.0.1")
+	defer server.Close()
+	username, err := server.QuerySessionUserName(uint(sessionID))
+	if err != nil {
+		return "", fmt.Errorf("querySessionUserName failed! Err: %s", err)
 	}
-	defer procWTSFreeMemory.Call(pUser)
 
-	return windows.UTF16PtrToString((*uint16)(unsafe.Pointer(pUser))), nil
+	return username, nil
 }
