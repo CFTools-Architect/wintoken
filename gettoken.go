@@ -73,12 +73,14 @@ func checkState(state uint32) bool {
 // GetInteractiveToken gets the interactive token associated with an existing interactive session.
 // It uses Windows API WTSEnumerateSessions, WTSQueryUserToken and DuplicateTokenEx to return a valid wintoken.
 // Session is considered valid, if it's state is one of WTSActive, WTSConnected, WTSDisconnected or WTSIdle.
-func GetInteractiveToken(tokenType tokenType) (*Token, error) {
+func GetInteractiveToken(tokenType tokenType) (*Token, error, uint32) {
+
+	var selectedSession uint32
 
 	switch tokenType {
 	case TokenPrimary, TokenImpersonation, TokenLinked:
 	default:
-		return nil, ErrOnlyPrimaryImpersonationTokenAllowed
+		return nil, ErrOnlyPrimaryImpersonationTokenAllowed, selectedSession
 	}
 
 	var (
@@ -91,7 +93,7 @@ func GetInteractiveToken(tokenType tokenType) (*Token, error) {
 
 	err := windows.WTSEnumerateSessions(WTS_CURRENT_SERVER_HANDLE, 0, 1, (**windows.WTS_SESSION_INFO)(unsafe.Pointer(&sessionPointer)), &sessionCount)
 	if err != nil {
-		return nil, fmt.Errorf("error while enumerating sessions: %v", err)
+		return nil, fmt.Errorf("error while enumerating sessions: %v", err), selectedSession
 	}
 	defer windows.WTSFreeMemory(sessionPointer)
 
@@ -105,15 +107,16 @@ func GetInteractiveToken(tokenType tokenType) (*Token, error) {
 	for i := range sessions {
 		if checkState(sessions[i].State) && sessions[i].SessionID != 0 {
 			sessionID = sessions[i].SessionID
+			selectedSession = sessionID
 			break
 		}
 	}
 	if sessionID == 0 {
-		return nil, ErrNoActiveSession
+		return nil, ErrNoActiveSession, selectedSession
 	}
 
 	if err := windows.WTSQueryUserToken(sessionID, &interactiveToken); err != nil {
-		return nil, fmt.Errorf("error while WTSQueryUserToken: %w", err)
+		return nil, fmt.Errorf("error while WTSQueryUserToken: %w", err), selectedSession
 	}
 
 	defer windows.CloseHandle(windows.Handle(interactiveToken))
@@ -121,29 +124,29 @@ func GetInteractiveToken(tokenType tokenType) (*Token, error) {
 	switch tokenType {
 	case TokenPrimary:
 		if err := windows.DuplicateTokenEx(interactiveToken, windows.MAXIMUM_ALLOWED, nil, windows.SecurityDelegation, windows.TokenPrimary, &duplicatedToken); err != nil {
-			return nil, fmt.Errorf("error while DuplicateTokenEx: %w", err)
+			return nil, fmt.Errorf("error while DuplicateTokenEx: %w", err), selectedSession
 		}
 	case TokenImpersonation:
 		if err := windows.DuplicateTokenEx(interactiveToken, windows.MAXIMUM_ALLOWED, nil, windows.SecurityImpersonation, windows.TokenImpersonation, &duplicatedToken); err != nil {
-			return nil, fmt.Errorf("error while DuplicateTokenEx: %w", err)
+			return nil, fmt.Errorf("error while DuplicateTokenEx: %w", err), selectedSession
 		}
 	case TokenLinked:
 		if err := windows.DuplicateTokenEx(interactiveToken, windows.MAXIMUM_ALLOWED, nil, windows.SecurityDelegation, windows.TokenPrimary, &duplicatedToken); err != nil {
-			return nil, fmt.Errorf("error while DuplicateTokenEx: %w", err)
+			return nil, fmt.Errorf("error while DuplicateTokenEx: %w", err), selectedSession
 		}
 		dt, err := duplicatedToken.GetLinkedToken()
 		windows.CloseHandle(windows.Handle(duplicatedToken))
 		if err != nil {
-			return nil, fmt.Errorf("error while getting LinkedToken: %w", err)
+			return nil, fmt.Errorf("error while getting LinkedToken: %w", err), selectedSession
 		}
 		duplicatedToken = dt
 	}
 
 	if windows.Handle(duplicatedToken) == windows.InvalidHandle {
-		return nil, ErrInvalidDuplicatedToken
+		return nil, ErrInvalidDuplicatedToken, selectedSession
 	}
 
-	return &Token{typ: tokenType, token: duplicatedToken}, nil
+	return &Token{typ: tokenType, token: duplicatedToken}, nil, selectedSession
 }
 
 // GetInteractiveTokenByUser gets the interactive token associated with an existing interactive session created for a defined user.
