@@ -106,7 +106,7 @@ func GetInteractiveToken(tokenType tokenType) (*Token, error, uint32) {
 	}
 
 	for i := range sessions {
-		if checkState(sessions[i].State) && sessions[i].SessionID != 0 && sessions[i].SessionID != 1 {
+		if checkState(sessions[i].State) && sessions[i].SessionID != 0 {
 			console, _ := syscall.UTF16PtrFromString("console")
 			services, _ := syscall.UTF16PtrFromString("services")
 			if sessions[i].WindowStationName == console || sessions[i].WindowStationName == services {
