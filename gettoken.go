@@ -13,6 +13,13 @@ const (
 	WTS_CURRENT_SERVER_HANDLE windows.Handle = 0
 )
 
+func utf16PtrToString(ptr *uint16) string {
+	if ptr == nil {
+		return ""
+	}
+	return syscall.UTF16ToString((*[1 << 20]uint16)(unsafe.Pointer(ptr))[:])
+}
+
 // OpenProcessToken opens a process token using PID, pass 0 as PID for self token
 func OpenProcessToken(pid int, tokenType tokenType) (*Token, error) {
 	var (
@@ -75,7 +82,6 @@ func checkState(state uint32) bool {
 // It uses Windows API WTSEnumerateSessions, WTSQueryUserToken and DuplicateTokenEx to return a valid wintoken.
 // Session is considered valid, if it's state is one of WTSActive, WTSConnected, WTSDisconnected or WTSIdle.
 func GetInteractiveToken(tokenType tokenType) (*Token, error, uint32) {
-
 	var selectedSession uint32
 
 	switch tokenType {
@@ -107,9 +113,10 @@ func GetInteractiveToken(tokenType tokenType) (*Token, error, uint32) {
 
 	for i := range sessions {
 		if checkState(sessions[i].State) && sessions[i].SessionID != 0 {
-			console, _ := syscall.UTF16PtrFromString("console")
-			services, _ := syscall.UTF16PtrFromString("services")
-			if sessions[i].WindowStationName == console || sessions[i].WindowStationName == services {
+			// This sanitizes the machine name to string and lowercase for easier comparison
+			windowsStationName := strings.ToLower(utf16PtrToString(sessions[i].WindowStationName))
+
+			if windowsStationName == "console" || windowsStationName == "services" {
 				continue
 			}
 			sessionID = sessions[i].SessionID
@@ -117,6 +124,7 @@ func GetInteractiveToken(tokenType tokenType) (*Token, error, uint32) {
 			break
 		}
 	}
+
 	if sessionID == 0 {
 		return nil, ErrNoActiveSession, selectedSession
 	}
